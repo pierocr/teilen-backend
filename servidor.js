@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const pool = require("./bd"); // Importa la conexión a la BD
+const os = require("os");
 
 const app = express();
 app.use(cors());
@@ -22,7 +23,7 @@ app.get("/test-db", async (req, res) => {
   }
 });
 
-// Importar rutas (cuando las agreguemos)
+// Importar rutas
 const rutasUsuarios = require("./rutas/usuarios");
 const rutasGrupos = require("./rutas/grupos");
 const rutasGastos = require("./rutas/gastos");
@@ -37,6 +38,25 @@ app.use("/deudas", rutasDeudas);
 
 // Iniciar el servidor
 const PUERTO = process.env.PUERTO || 5001;
-app.listen(PUERTO, () => {
-  console.log(`🔥 Servidor corriendo en http://localhost:${PUERTO}`);
+const HOST = "0.0.0.0"; // Permite conexiones desde cualquier dispositivo en la red
+
+// Obtener la IP de la red local automáticamente
+const getLocalIp = () => {
+  const interfaces = os.networkInterfaces();
+  for (const iface of Object.values(interfaces)) {
+    for (const config of iface) {
+      if (config.family === "IPv4" && !config.internal) {
+        return config.address;
+      }
+    }
+  }
+  return "localhost"; // En caso de que no encuentre una IP válida
+};
+
+const LOCAL_IP = getLocalIp();
+
+app.listen(PUERTO, HOST, () => {
+  console.log(`🔥 Servidor corriendo en:`);
+  console.log(`➡ Local:    http://localhost:${PUERTO}`);
+  console.log(`➡ Red LAN:  http://${LOCAL_IP}:${PUERTO}`);
 });

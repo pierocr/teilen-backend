@@ -36,7 +36,6 @@ router.post("/", verificarToken, async (req, res) => {
   try {
     const { id_grupo, monto, descripcion, pagado_por, id_usuarios } = req.body;
 
-    // Validaciones básicas
     if (!id_grupo || !monto || !descripcion || !pagado_por || !id_usuarios.length) {
       return res.status(400).json({ error: "Todos los campos son obligatorios" });
     }
@@ -56,36 +55,44 @@ router.post("/", verificarToken, async (req, res) => {
       return res.status(400).json({ error: "El usuario que pagó no existe" });
     }
 
-    // Verificar que todos los usuarios existan
-    for (let id_usuario of id_usuarios) {
-      const checkUsuario = await pool.query("SELECT id FROM usuarios WHERE id = $1", [id_usuario]);
-      if (checkUsuario.rows.length === 0) {
-        return res.status(400).json({ error: `El usuario con ID ${id_usuario} no existe` });
-      }
-    }
-
-    // Insertar el gasto si todo es válido
+    // Crear el gasto
     const nuevoGasto = await pool.query(
-      "INSERT INTO gastos (id_grupo, monto, descripcion, pagado_por) VALUES ($1, $2, $3, $4) RETURNING *",
+      "INSERT INTO gastos (id_grupo, monto, descripcion, pagado_por) VALUES ($1, $2, $3, $4) RETURNING id",
       [id_grupo, monto, descripcion, pagado_por]
     );
 
     const id_gasto = nuevoGasto.rows[0].id;
 
-    // Calcular monto a dividir entre los usuarios
-    const monto_dividido = (monto / id_usuarios.length).toFixed(2);
+ // Calcular la parte justa de cada usuario
+let monto_dividido = Math.floor((monto / id_usuarios.length) * 100) / 100;
+let ajuste = monto - (monto_dividido * id_usuarios.length);
 
-    // Registrar las deudas
-    for (let id_usuario of id_usuarios) {
-      if (id_usuario !== pagado_por) { // El que pagó no se debe a sí mismo
-        await pool.query(
-          "INSERT INTO deudas (id_gasto, id_usuario, monto) VALUES ($1, $2, $3)",
-          [id_gasto, id_usuario, monto_dividido]
-        );
-      }
+// Aplicar el ajuste al primer usuario de la lista
+let primer_usuario = true;
+for (let id_usuario of id_usuarios) {
+  if (id_usuario !== pagado_por) {
+    let monto_final = monto_dividido;
+    
+    if (primer_usuario) {
+      monto_final += ajuste;
+      primer_usuario = false;
     }
 
-    res.json({ mensaje: "Gasto y deudas registradas correctamente", gasto: nuevoGasto.rows[0] });
+    const deudaExiste = await pool.query(
+      "SELECT id FROM deudas WHERE id_gasto = $1 AND id_usuario = $2",
+      [id_gasto, id_usuario]
+    );
+
+    if (deudaExiste.rows.length === 0) {
+      await pool.query(
+        "INSERT INTO deudas (id_gasto, id_usuario, monto) VALUES ($1, $2, $3)",
+        [id_gasto, id_usuario, monto_final]
+      );
+    }
+  }
+}
+
+    res.json({ mensaje: "Gasto y deudas registradas correctamente" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

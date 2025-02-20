@@ -1,31 +1,37 @@
 const express = require("express");
 const pool = require("../bd"); // Conexión a la BD
 const router = express.Router();
-
-
-// 📌 Obtener resumen de deudas en un grupo (ANTES QUE LAS OTRAS RUTAS CON PARÁMETROS)
 const verificarToken = require("../middlewares/authMiddleware");
 
-router.get("/resumen/:id_grupo", verificarToken, async (req, res) => {
-  try {
-    const { id_grupo } = req.params;
-    const resumen = await pool.query(
-      `SELECT u.nombre AS deudor, u2.nombre AS acreedor, SUM(d.monto) AS monto_total
-       FROM deudas d
-       JOIN usuarios u ON d.id_usuario = u.id
-       JOIN gastos g ON d.id_gasto = g.id
-       JOIN usuarios u2 ON g.pagado_por = u2.id
-       WHERE g.id_grupo = $1
-       GROUP BY u.nombre, u2.nombre
-       ORDER BY monto_total DESC`,
-      [parseInt(id_grupo)]
-    );
-    res.json(resumen.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
+// 📌 Obtener resumen de deudas en un grupo optimizado
+router.get("/resumen/:id_grupo", async (req, res) => {
+    try {
+      const { id_grupo } = req.params;
+  
+      if (isNaN(id_grupo)) {
+        return res.status(400).json({ error: "El ID del grupo debe ser un número válido" });
+      }
+  
+      const resumen = await pool.query(
+        `SELECT 
+            deudor.nombre AS deudor,
+            acreedor.nombre AS acreedor,
+            SUM(d.monto) AS monto_total
+         FROM deudas d
+         JOIN usuarios deudor ON d.id_usuario = deudor.id
+         JOIN gastos g ON d.id_gasto = g.id
+         JOIN usuarios acreedor ON g.pagado_por = acreedor.id
+         WHERE g.id_grupo = $1
+         GROUP BY deudor.nombre, acreedor.nombre
+         ORDER BY monto_total DESC`,
+        [parseInt(id_grupo)]
+      );
+  
+      res.json(resumen.rows);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
 // 📌 Obtener todas las deudas (PROTEGIDO)
 router.get("/", verificarToken, async (req, res) => {

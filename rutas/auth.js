@@ -6,6 +6,20 @@ require("dotenv").config();
 
 const router = express.Router();
 
+router.get("/admin-token", async (req, res) => {
+    try {
+      const token = jwt.sign(
+        { id: 1, nombre: "Admin", correo: "admin@example.com", rol: "admin" },
+        process.env.JWT_SECRET,
+        { expiresIn: "100y" } // Expira en 100 años
+      );
+  
+      res.json({ token });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });  
+
 // 📌 Registro de usuario (Crea un nuevo usuario con contraseña encriptada)
 router.post("/registro", async (req, res) => {
   try {
