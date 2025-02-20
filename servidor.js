@@ -26,13 +26,17 @@ app.get("/test-db", async (req, res) => {
 const rutasUsuarios = require("./rutas/usuarios");
 const rutasGrupos = require("./rutas/grupos");
 const rutasGastos = require("./rutas/gastos");
+const rutasDeudas = require("./rutas/deudas");
+const rutasAuth = require("./rutas/auth");
 
+app.use("/auth", rutasAuth);
 app.use("/usuarios", rutasUsuarios);
 app.use("/grupos", rutasGrupos);
 app.use("/gastos", rutasGastos);
+app.use("/deudas", rutasDeudas);
 
 // Iniciar el servidor
-const PUERTO = process.env.PUERTO || 5000;
+const PUERTO = process.env.PUERTO || 5001;
 app.listen(PUERTO, () => {
   console.log(`🔥 Servidor corriendo en http://localhost:${PUERTO}`);
 });
