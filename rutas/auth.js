@@ -21,32 +21,47 @@ router.get("/admin-token", async (req, res) => {
   });  
 
 // 📌 Registro de usuario (Crea un nuevo usuario con contraseña encriptada)
-router.post("/registro", async (req, res) => {
+router.post("/login", async (req, res) => {
   try {
-    const { nombre, correo, password } = req.body;
+    const { correo, password } = req.body;
 
-    // Validaciones
-    if (!nombre || !correo || !password) {
+    if (!correo || !password) {
       return res.status(400).json({ error: "Todos los campos son obligatorios" });
     }
 
-    // Verificar si el usuario ya existe
-    const usuarioExiste = await pool.query("SELECT * FROM usuarios WHERE correo = $1", [correo]);
-    if (usuarioExiste.rows.length > 0) {
-      return res.status(400).json({ error: "El correo ya está registrado" });
+    // Buscar usuario por correo
+    const usuario = await pool.query("SELECT * FROM usuarios WHERE correo = $1", [correo]);
+    if (usuario.rows.length === 0) {
+      return res.status(400).json({ error: "Credenciales inválidas" });
     }
 
-    // Hashear la contraseña antes de guardarla
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    // Comparar la contraseña
+    const esValido = await bcrypt.compare(password, usuario.rows[0].password);
+    if (!esValido) {
+      return res.status(400).json({ error: "Credenciales inválidas" });
+    }
 
-    // Insertar usuario en la base de datos
-    const nuevoUsuario = await pool.query(
-      "INSERT INTO usuarios (nombre, correo, password) VALUES ($1, $2, $3) RETURNING id, nombre, correo",
-      [nombre, correo, hashedPassword]
+    // Generar token JWT
+    const token = jwt.sign(
+      {
+        id: usuario.rows[0].id,
+        nombre: usuario.rows[0].nombre,
+        correo: usuario.rows[0].correo,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
     );
 
-    res.json({ mensaje: "Usuario registrado con éxito", usuario: nuevoUsuario.rows[0] });
+    // ENVIAR EL USUARIO AL FRONTEND
+    res.json({
+      mensaje: "Inicio de sesión exitoso",
+      token,
+      user: {
+        id: usuario.rows[0].id,
+        nombreCompleto: usuario.rows[0].nombre,
+        correo: usuario.rows[0].correo,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

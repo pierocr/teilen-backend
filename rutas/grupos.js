@@ -73,11 +73,29 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // 1. Borrar deudas asociadas al grupo
+    await pool.query(`
+      DELETE FROM deudas
+      WHERE id_gasto IN (
+        SELECT id FROM gastos WHERE id_grupo = $1
+      )
+    `, [id]);
+
+    // 2. Borrar gastos asociados
+    await pool.query("DELETE FROM gastos WHERE id_grupo = $1", [id]);
+
+    // 3. Borrar registros en usuarios_grupos
+    await pool.query("DELETE FROM usuarios_grupos WHERE grupo_id = $1", [id]);
+
+    // 4. Borrar el grupo
     await pool.query("DELETE FROM grupos WHERE id = $1", [id]);
-    res.json({ mensaje: "Grupo eliminado correctamente" });
+
+    res.json({ mensaje: "Grupo eliminado correctamente (y deudas liquidadas)." });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 module.exports = router;
