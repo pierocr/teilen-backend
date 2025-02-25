@@ -1,156 +1,98 @@
 const express = require("express");
-const pool = require("../bd"); // Conexión a la BD
+const pool = require("../bd");
 const verificarToken = require("../middlewares/auth");
-
 const router = express.Router();
 
-// 📌 Obtener todos los gastos (PROTEGIDO)
-router.get("/", verificarToken, async (req, res) => {
-  try {
-    const gastos = await pool.query("SELECT * FROM gastos ORDER BY creado_en DESC");
-    res.json(gastos.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 📌 Obtener los gastos de un grupo específico (PROTEGIDO)
+// 📌 Obtener los gastos de un grupo con detalles de pago y deudas
 router.get("/:id_grupo", verificarToken, async (req, res) => {
   try {
     const { id_grupo } = req.params;
-    
-    // Validar que sea un número
-    if (isNaN(id_grupo)) {
-      return res.status(400).json({ error: "El ID del grupo debe ser un número válido" });
+
+    const gastos = await pool.query(
+      `SELECT g.id, g.descripcion, g.monto, g.pagado_por, g.categoria, 
+              u.nombre AS pagado_por_nombre, u.correo AS pagado_por_correo
+       FROM gastos g
+       JOIN usuarios u ON g.pagado_por = u.id
+       WHERE g.id_grupo = $1
+       ORDER BY g.creado_en DESC`,
+      [id_grupo]
+    );
+
+    // Para cada gasto, buscar las deudas asociadas
+    for (let gasto of gastos.rows) {
+      const deudas = await pool.query(
+        `SELECT d.id_usuario, u.nombre AS deudor_nombre, d.monto 
+         FROM deudas d
+         JOIN usuarios u ON d.id_usuario = u.id
+         WHERE d.id_gasto = $1`,
+        [gasto.id]
+      );
+      gasto.deudas = deudas.rows;
     }
 
-    const gastos = await pool.query("SELECT * FROM gastos WHERE id_grupo = $1 ORDER BY creado_en DESC", [parseInt(id_grupo)]);
     res.json(gastos.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error("❌ Error en GET /gastos/:id_grupo:", error);
+    res
+      .status(500)
+      .json({ error: "Error obteniendo los gastos", detalles: error.message });
   }
 });
 
-// 📌 Crear un nuevo gasto con validaciones y división de deudas (PROTEGIDO)
+// 📌 Crear un nuevo gasto, insertar en tabla gastos y (opcional) generar las deudas
 router.post("/", verificarToken, async (req, res) => {
   try {
-    const { id_grupo, monto, descripcion, pagado_por, id_usuarios } = req.body;
+    const {
+      id_grupo,
+      monto,
+      descripcion,
+      pagado_por,
+      id_usuarios, // array de IDs de usuarios que participan en el gasto
+      categoria,
+    } = req.body;
 
-    if (!id_grupo || !monto || !descripcion || !pagado_por || !id_usuarios.length) {
-      return res.status(400).json({ error: "Todos los campos son obligatorios" });
-    }
-    if (monto <= 0) {
-      return res.status(400).json({ error: "El monto debe ser mayor a 0" });
-    }
-
-    // Verificar si el grupo existe
-    const grupoExiste = await pool.query("SELECT * FROM grupos WHERE id = $1", [id_grupo]);
-    if (grupoExiste.rows.length === 0) {
-      return res.status(400).json({ error: "El grupo no existe" });
-    }
-
-    // Verificar si el usuario que pagó existe
-    const usuarioExiste = await pool.query("SELECT * FROM usuarios WHERE id = $1", [pagado_por]);
-    if (usuarioExiste.rows.length === 0) {
-      return res.status(400).json({ error: "El usuario que pagó no existe" });
+    // Validación de datos
+    if (!id_grupo || !monto || !descripcion || !pagado_por || !categoria) {
+      return res
+        .status(400)
+        .json({ error: "Todos los campos son obligatorios" });
     }
 
-    // Crear el gasto
+    // Verificar que `monto` sea un número válido
+    if (isNaN(monto) || monto <= 0) {
+      return res.status(400).json({ error: "El monto debe ser un número válido" });
+    }
+
+    // Insertar el nuevo gasto
     const nuevoGasto = await pool.query(
-      "INSERT INTO gastos (id_grupo, monto, descripcion, pagado_por) VALUES ($1, $2, $3, $4) RETURNING id",
-      [id_grupo, monto, descripcion, pagado_por]
+      `INSERT INTO gastos (id_grupo, monto, descripcion, pagado_por, categoria)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [id_grupo, monto, descripcion, pagado_por, categoria]
     );
 
-    const id_gasto = nuevoGasto.rows[0].id;
+    // Validar si hay usuarios para dividir el gasto
+    if (Array.isArray(id_usuarios) && id_usuarios.length > 0) {
+      const gastoId = nuevoGasto.rows[0].id;
+      const montoIndividual = parseFloat((monto / id_usuarios.length).toFixed(2));
 
- // Calcular la parte justa de cada usuario
-let monto_dividido = Math.floor((monto / id_usuarios.length) * 100) / 100;
-let ajuste = monto - (monto_dividido * id_usuarios.length);
+      for (const userId of id_usuarios) {
+        if (userId == pagado_por) continue; // No creamos deuda para el pagador
 
-// Aplicar el ajuste al primer usuario de la lista
-let primer_usuario = true;
-for (let id_usuario of id_usuarios) {
-  if (id_usuario !== pagado_por) {
-    let monto_final = monto_dividido;
-    
-    if (primer_usuario) {
-      monto_final += ajuste;
-      primer_usuario = false;
+        await pool.query(
+          `INSERT INTO deudas (id_gasto, id_usuario, monto)
+           VALUES ($1, $2, $3)`,
+          [gastoId, userId, montoIndividual]
+        );
+      }
     }
 
-    const deudaExiste = await pool.query(
-      "SELECT id FROM deudas WHERE id_gasto = $1 AND id_usuario = $2",
-      [id_gasto, id_usuario]
-    );
-
-    if (deudaExiste.rows.length === 0) {
-      await pool.query(
-        "INSERT INTO deudas (id_gasto, id_usuario, monto) VALUES ($1, $2, $3)",
-        [id_gasto, id_usuario, monto_final]
-      );
-    }
-  }
-}
-
-    res.json({ mensaje: "Gasto y deudas registradas correctamente" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.json(nuevoGasto.rows[0]);
+  } catch (error) {
+    console.error("❌ Error en POST /gastos:", error);
+    res.status(500).json({ error: "Error al crear el gasto" });
   }
 });
 
-// 📌 Actualizar un gasto (PROTEGIDO)
-router.put("/:id", verificarToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { monto, descripcion, pagado_por } = req.body;
-
-    // Validaciones
-    if (!monto || !descripcion || !pagado_por) {
-      return res.status(400).json({ error: "Todos los campos son obligatorios" });
-    }
-    if (monto <= 0) {
-      return res.status(400).json({ error: "El monto debe ser mayor a 0" });
-    }
-
-    // Verificar si el gasto existe
-    const gastoExiste = await pool.query("SELECT * FROM gastos WHERE id = $1", [id]);
-    if (gastoExiste.rows.length === 0) {
-      return res.status(400).json({ error: "El gasto no existe" });
-    }
-
-    // Actualizar el gasto
-    const gastoActualizado = await pool.query(
-      "UPDATE gastos SET monto = $1, descripcion = $2, pagado_por = $3 WHERE id = $4 RETURNING *",
-      [monto, descripcion, pagado_por, id]
-    );
-
-    res.json(gastoActualizado.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 📌 Eliminar un gasto y sus deudas asociadas (PROTEGIDO)
-router.delete("/:id", verificarToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Verificar si el gasto existe
-    const gastoExiste = await pool.query("SELECT * FROM gastos WHERE id = $1", [id]);
-    if (gastoExiste.rows.length === 0) {
-      return res.status(400).json({ error: "El gasto no existe" });
-    }
-
-    // Eliminar las deudas asociadas antes de eliminar el gasto
-    await pool.query("DELETE FROM deudas WHERE id_gasto = $1", [id]);
-
-    // Eliminar el gasto
-    await pool.query("DELETE FROM gastos WHERE id = $1", [id]);
-
-    res.json({ mensaje: "Gasto y deudas eliminadas correctamente" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 module.exports = router;

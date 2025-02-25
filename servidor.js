@@ -30,6 +30,8 @@ const rutasGastos = require("./rutas/gastos");
 const rutasDeudas = require("./rutas/deudas");
 const rutasAuth = require("./rutas/auth");
 const rutasBalance = require("./rutas/balance"); 
+const actividadRoutes = require("./rutas/actividad");
+const amigosRoutes = require("./rutas/amigos");
 
 app.use("/auth", rutasAuth);
 app.use("/usuarios", rutasUsuarios);
@@ -37,6 +39,8 @@ app.use("/grupos", rutasGrupos);
 app.use("/gastos", rutasGastos);
 app.use("/deudas", rutasDeudas);
 app.use("/balance", rutasBalance);
+app.use("/actividad", actividadRoutes);
+app.use("/amigos", amigosRoutes);
 
 // Iniciar el servidor
 const PUERTO = process.env.PUERTO || 5001;
