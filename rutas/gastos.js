@@ -153,4 +153,41 @@ router.delete("/:id", verificarToken, async (req, res) => {
   }
 });
 
+// Al final de gastos.js
+router.get("/actividad", verificarToken, async (req, res) => {
+  try {
+    const userId = req.usuario.id;
+
+    // Consulta: cualquier gasto donde user haya pagado
+    // o esté en "deudas" con su userId
+    const query = `
+      SELECT
+        g.id AS gasto_id,
+        g.descripcion,
+        g.monto,
+        g.pagado_por,
+        g.id_grupo,
+        g.creado_en,
+        -- Info adicional: el nombre del grupo, el nombre del que pagó, etc.
+        grupos.nombre AS nombre_grupo,
+        up.nombre AS nombre_pagador
+      FROM gastos g
+      JOIN grupos ON g.id_grupo = grupos.id
+      JOIN usuarios up ON g.pagado_por = up.id
+      WHERE g.pagado_por = $1
+         OR g.id IN (
+            SELECT d.id_gasto FROM deudas d WHERE d.id_usuario = $1
+         )
+      ORDER BY g.creado_en DESC
+    `;
+
+    const resultado = await pool.query(query, [userId]);
+    res.json(resultado.rows);
+  } catch (error) {
+    console.error("Error en GET /gastos/actividad:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 module.exports = router;

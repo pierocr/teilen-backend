@@ -130,5 +130,31 @@ router.get("/perfil", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// auth.js (por ejemplo, en router.get("/perfil")...):
+router.get("/perfil", async (req, res) => {
+  try {
+    const token = req.header("Authorization");
+    if (!token) {
+      return res.status(401).json({ error: "Acceso denegado. No hay token." });
+    }
+
+    // Verificar el token
+    const decoded = jwt.verify(token.replace("Bearer ", ""), process.env.JWT_SECRET);
+    const usuario = await pool.query(`
+      SELECT id, nombre, correo, telefono, direccion, fecha_nacimiento
+      FROM usuarios
+      WHERE id = $1
+    `, [decoded.id]);
+
+    if (usuario.rows.length === 0) {
+      return res.status(400).json({ error: "Usuario no encontrado." });
+    }
+
+    res.json(usuario.rows[0]);
+  } catch (err) {
+    return res.status(403).json({ error: "Token inválido." });
+  }
+});
+
 
 module.exports = router;
