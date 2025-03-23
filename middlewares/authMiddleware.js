@@ -1,6 +1,8 @@
+require("dotenv").config(); // al inicio de authMiddleware.js si es necesario
+
 const jwt = require("jsonwebtoken");
 
-const JWT_SECRET = "secreto_super_seguro"; // Reemplázalo con una variable de entorno en producción
+const JWT_SECRET = process.env.JWT_SECRET;// Reemplázalo con una variable de entorno en producción
 
 const verificarToken = (req, res, next) => {
   const token = req.header("Authorization");

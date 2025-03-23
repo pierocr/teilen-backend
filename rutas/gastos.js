@@ -14,22 +14,7 @@ router.get("/", verificarToken, async (req, res) => {
   }
 });
 
-// 📌 Obtener los gastos de un grupo específico (PROTEGIDO)
-router.get("/:id_grupo", verificarToken, async (req, res) => {
-  try {
-    const { id_grupo } = req.params;
-    
-    // Validar que sea un número
-    if (isNaN(id_grupo)) {
-      return res.status(400).json({ error: "El ID del grupo debe ser un número válido" });
-    }
 
-    const gastos = await pool.query("SELECT * FROM gastos WHERE id_grupo = $1 ORDER BY creado_en DESC", [parseInt(id_grupo)]);
-    res.json(gastos.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // 📌 Crear un nuevo gasto con validaciones y división de deudas (PROTEGIDO)
 router.post("/", verificarToken, async (req, res) => {
@@ -186,6 +171,23 @@ router.get("/actividad", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Error en GET /gastos/actividad:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// 📌 Obtener los gastos de un grupo específico (PROTEGIDO)
+router.get("/:id_grupo", verificarToken, async (req, res) => {
+  try {
+    const { id_grupo } = req.params;
+    
+    // Validar que sea un número
+    if (isNaN(id_grupo)) {
+      return res.status(400).json({ error: "El ID del grupo debe ser un número válido" });
+    }
+
+    const gastos = await pool.query("SELECT * FROM gastos WHERE id_grupo = $1 ORDER BY creado_en DESC", [parseInt(id_grupo)]);
+    res.json(gastos.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
