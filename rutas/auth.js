@@ -60,6 +60,7 @@ router.post("/login", async (req, res) => {
         id: usuario.rows[0].id,
         nombreCompleto: usuario.rows[0].nombre,
         correo: usuario.rows[0].correo,
+        imagen_perfil: usuario.rows[0].imagen_perfil,
       },
     });
   } catch (err) {

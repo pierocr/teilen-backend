@@ -10,13 +10,20 @@ router.get("/", verificarToken, async (req, res) => {
     console.log("🔍 Buscando grupos para usuario:", usuario_id);
 
     const grupos = await pool.query(
-      `SELECT g.id, g.nombre, g.imagen, 
-              COALESCE(SUM(gastos.monto), 0) AS total 
-       FROM grupos g
-       JOIN usuarios_grupos ug ON g.id = ug.grupo_id
-       LEFT JOIN gastos ON g.id = gastos.id_grupo  -- 🔹 Cambié grupo_id por id_grupo
-       WHERE ug.usuario_id = $1
-       GROUP BY g.id`,
+      `SELECT 
+      g.id, 
+      g.nombre, 
+      g.imagen,
+      COALESCE(SUM(ga.monto), 0) AS total,
+      COALESCE(SUM(d.monto), 0) AS monto_adeudado
+    FROM grupos g
+    JOIN usuarios_grupos ug ON g.id = ug.grupo_id
+    LEFT JOIN gastos ga ON g.id = ga.id_grupo
+    LEFT JOIN gastos g2 ON g2.id_grupo = g.id
+    LEFT JOIN deudas d ON d.id_gasto = g2.id AND d.id_usuario = $1
+    WHERE ug.usuario_id = $1
+    GROUP BY g.id
+  `,
       [usuario_id]
     );
 
