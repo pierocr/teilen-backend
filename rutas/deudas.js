@@ -43,6 +43,43 @@ router.get("/", verificarToken, async (req, res) => {
     }
   });
 
+  // 📌 Obtener desglose detallado de deudas en un grupo
+router.get("/desglose/:id_grupo", verificarToken, async (req, res) => {
+  try {
+    const { id_grupo } = req.params;
+
+    console.log("👉 id_grupo recibido:", id_grupo);
+
+    // Validación robusta
+    if (!id_grupo || isNaN(Number(id_grupo))) {
+      return res.status(400).json({ error: "El ID del grupo debe ser un número válido" });
+    }
+
+    const grupoIdNum = parseInt(id_grupo, 10);
+
+    const desglose = await pool.query(
+      `SELECT 
+          d.id_usuario AS deudor_id,
+          u.nombre AS deudor_nombre,
+          g.pagado_por AS acreedor_id,
+          u2.nombre AS acreedor_nombre,
+          SUM(d.monto) AS monto_total
+       FROM deudas d
+       JOIN gastos g ON d.id_gasto = g.id
+       JOIN usuarios u ON d.id_usuario = u.id
+       JOIN usuarios u2 ON g.pagado_por = u2.id
+       WHERE g.id_grupo = $1
+       GROUP BY d.id_usuario, g.pagado_por, u.nombre, u2.nombre`,
+      [grupoIdNum]
+    );
+
+    res.json({ resultado: desglose.rows });
+  } catch (err) {
+    console.error("❌ Error en GET /deudas/desglose/:id_grupo:", err);
+    res.status(500).json({ error: "Error obteniendo desglose de deudas" });
+  }
+});
+
 // 📌 Obtener deudas de un usuario en un grupo específico
 router.get("/:id_usuario/:id_grupo", async (req, res) => {
   try {
@@ -141,5 +178,7 @@ router.delete("/liquidar/:id_usuario/:id_grupo", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
 
 module.exports = router;

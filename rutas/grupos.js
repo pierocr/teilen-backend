@@ -103,6 +103,25 @@ router.delete("/:id", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// 📌 Obtener participantes de un grupo específico
+router.get("/:id/participantes", verificarToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const participantes = await pool.query(
+      `SELECT u.id, u.nombre, u.correo
+       FROM usuarios u
+       JOIN usuarios_grupos ug ON u.id = ug.usuario_id
+       WHERE ug.grupo_id = $1`,
+      [id]
+    );
+
+    res.json(participantes.rows);
+  } catch (error) {
+    console.error("❌ Error en GET /grupos/:id/participantes:", error);
+    res.status(500).json({ error: "Error obteniendo participantes" });
+  }
+});
 
 
 module.exports = router;

@@ -14,12 +14,19 @@ router.get("/", verificarToken, async (req, res) => {
   }
 });
 
-
-
 // 📌 Crear un nuevo gasto con validaciones y división de deudas (PROTEGIDO)
 router.post("/", verificarToken, async (req, res) => {
   try {
-    const { id_grupo, monto, descripcion, pagado_por, id_usuarios } = req.body;
+    const {
+      id_grupo,
+      monto,
+      descripcion,
+      pagado_por,
+      id_usuarios,
+      montos_personalizados,
+      imagen,
+      categoria_id
+    } = req.body;
 
     if (!id_grupo || !monto || !descripcion || !pagado_por || !id_usuarios.length) {
       return res.status(400).json({ error: "Todos los campos son obligatorios" });
@@ -28,60 +35,90 @@ router.post("/", verificarToken, async (req, res) => {
       return res.status(400).json({ error: "El monto debe ser mayor a 0" });
     }
 
-    // Verificar si el grupo existe
     const grupoExiste = await pool.query("SELECT * FROM grupos WHERE id = $1", [id_grupo]);
     if (grupoExiste.rows.length === 0) {
       return res.status(400).json({ error: "El grupo no existe" });
     }
 
-    // Verificar si el usuario que pagó existe
     const usuarioExiste = await pool.query("SELECT * FROM usuarios WHERE id = $1", [pagado_por]);
     if (usuarioExiste.rows.length === 0) {
       return res.status(400).json({ error: "El usuario que pagó no existe" });
     }
 
-    // Crear el gasto
     const nuevoGasto = await pool.query(
-      "INSERT INTO gastos (id_grupo, monto, descripcion, pagado_por) VALUES ($1, $2, $3, $4) RETURNING id",
-      [id_grupo, monto, descripcion, pagado_por]
+      "INSERT INTO gastos (id_grupo, monto, descripcion, pagado_por, imagen, categoria_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+      [id_grupo, monto, descripcion, pagado_por, imagen, categoria_id]
     );
 
     const id_gasto = nuevoGasto.rows[0].id;
+    const timestamp = new Date();
+    const usuariosProcesados = new Set();
 
- // Calcular la parte justa de cada usuario
-let monto_dividido = Math.floor((monto / id_usuarios.length) * 100) / 100;
-let ajuste = monto - (monto_dividido * id_usuarios.length);
+    if (montos_personalizados && Object.keys(montos_personalizados).length > 0) {
+      let sumaMontos = Object.values(montos_personalizados).reduce((a, b) => a + b, 0);
+      if (sumaMontos !== monto) {
+        return res.status(400).json({ error: "La suma de los montos personalizados no coincide con el monto total" });
+      }
 
-// Aplicar el ajuste al primer usuario de la lista
-let primer_usuario = true;
-for (let id_usuario of id_usuarios) {
-  if (id_usuario !== pagado_por) {
-    let monto_final = monto_dividido;
-    
-    if (primer_usuario) {
-      monto_final += ajuste;
-      primer_usuario = false;
+      for (let id_usuario of id_usuarios) {
+        const monto_final = montos_personalizados[id_usuario] || 0;
+        const tipo = (id_usuario === pagado_por) ? 'a_favor' : 'deuda';
+
+        await pool.query(
+          "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
+          [id_gasto, id_usuario, monto_final, tipo, timestamp]
+        );
+        usuariosProcesados.add(id_usuario);
+      }
+    } else {
+      let monto_dividido = Math.floor((monto / id_usuarios.length) * 100) / 100;
+      let ajuste = monto - (monto_dividido * id_usuarios.length);
+
+      let primer_usuario = true;
+      for (let id_usuario of id_usuarios) {
+        let monto_final = monto_dividido;
+
+        if (primer_usuario) {
+          monto_final += ajuste;
+          primer_usuario = false;
+        }
+
+        const tipo = (id_usuario === pagado_por) ? 'a_favor' : 'deuda';
+
+        await pool.query(
+          "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
+          [id_gasto, id_usuario, monto_final, tipo, timestamp]
+        );
+        usuariosProcesados.add(id_usuario);
+      }
     }
 
-    const deudaExiste = await pool.query(
-      "SELECT id FROM deudas WHERE id_gasto = $1 AND id_usuario = $2",
-      [id_gasto, id_usuario]
-    );
-
-    if (deudaExiste.rows.length === 0) {
+    // Si por alguna razón el pagador no estaba en id_usuarios, lo registramos igual
+    if (!usuariosProcesados.has(pagado_por)) {
       await pool.query(
-        "INSERT INTO deudas (id_gasto, id_usuario, monto) VALUES ($1, $2, $3)",
-        [id_gasto, id_usuario, monto_final]
+        "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
+        [id_gasto, pagado_por, monto, 'a_favor', timestamp]
       );
     }
-  }
-}
 
-    res.json({ mensaje: "Gasto y deudas registradas correctamente" });
+    res.json({
+      mensaje: "Gasto y deudas registradas correctamente",
+      gasto: {
+        id: id_gasto,
+        id_grupo,
+        monto,
+        descripcion,
+        pagado_por,
+        imagen,
+        categoria_id,
+        creado_en: timestamp
+      }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // 📌 Actualizar un gasto (PROTEGIDO)
 router.put("/:id", verificarToken, async (req, res) => {
