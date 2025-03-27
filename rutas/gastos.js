@@ -211,22 +211,108 @@ router.get("/actividad", verificarToken, async (req, res) => {
   }
 });
 
-// 📌 Obtener los gastos de un grupo específico (PROTEGIDO)
+// 📌 Obtener el detalle de un gasto por ID (PROTEGIDO)
+router.get("/:id/detalle", verificarToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const gasto = await pool.query(
+      `SELECT g.*, u.nombre as nombre_pagador 
+       FROM gastos g 
+       JOIN usuarios u ON g.pagado_por = u.id 
+       WHERE g.id = $1`,
+      [id]
+    );
+
+    if (gasto.rows.length === 0) {
+      return res.status(404).json({ error: "Gasto no encontrado" });
+    }
+
+    const deudas = await pool.query(
+      `SELECT d.*, u.nombre as nombre_usuario 
+       FROM deudas d 
+       JOIN usuarios u ON d.id_usuario = u.id 
+       WHERE d.id_gasto = $1`,
+      [id]
+    );
+
+    res.json({
+      id: gasto.rows[0].id,
+      descripcion: gasto.rows[0].descripcion,
+      monto: gasto.rows[0].monto,
+      pagado_por: {
+        id: gasto.rows[0].pagado_por,
+        nombre: gasto.rows[0].nombre_pagador,
+      },
+      deudas: deudas.rows.map((d) => ({
+        id_usuario: d.id_usuario,
+        nombre_usuario: d.nombre_usuario,
+        monto: d.monto,
+        tipo: d.tipo,
+      })),
+    });
+  } catch (error) {
+    console.error("❌ Error en GET /gastos/:id/detalle:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📌 Obtener los gastos de un grupo específico con detalle para frontend (PROTEGIDO)
 router.get("/:id_grupo", verificarToken, async (req, res) => {
   try {
     const { id_grupo } = req.params;
-    
-    // Validar que sea un número
+    const id_usuario = req.usuario.id;
+
     if (isNaN(id_grupo)) {
       return res.status(400).json({ error: "El ID del grupo debe ser un número válido" });
     }
 
-    const gastos = await pool.query("SELECT * FROM gastos WHERE id_grupo = $1 ORDER BY creado_en DESC", [parseInt(id_grupo)]);
-    res.json(gastos.rows);
+    const gastosRaw = await pool.query(
+      `SELECT g.*, u.nombre as pagador_nombre
+       FROM gastos g
+       JOIN usuarios u ON g.pagado_por = u.id
+       WHERE g.id_grupo = $1
+       ORDER BY g.creado_en DESC`,
+      [parseInt(id_grupo)]
+    );
+
+    const gastos = [];
+
+    for (const gasto of gastosRaw.rows) {
+      const deuda = await pool.query(
+        `SELECT monto, tipo FROM deudas WHERE id_gasto = $1 AND id_usuario = $2`,
+        [gasto.id, id_usuario]
+      );
+
+      let relacion_usuario = "sin_participacion";
+      let monto_usuario = 0;
+
+      if (deuda.rows.length > 0) {
+        relacion_usuario = deuda.rows[0].tipo === "a_favor" ? "a_favor" : "debes";
+        monto_usuario = deuda.rows[0].monto;
+      }
+
+      gastos.push({
+        id: gasto.id,
+        descripcion: gasto.descripcion,
+        monto: gasto.monto,
+        imagen: gasto.imagen,
+        fecha: gasto.creado_en,
+        pagado_por: {
+          id: gasto.pagado_por,
+          nombre: gasto.pagador_nombre
+        },
+        relacion_usuario,
+        monto_usuario
+      });
+    }
+
+    res.json(gastos);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 module.exports = router;
