@@ -119,6 +119,73 @@ router.post("/", verificarToken, async (req, res) => {
   }
 });
 
+// PUT /gastos/:idGasto/pago
+router.put('/:idGasto/pago', verificarToken, async (req, res) => {
+  const { idGasto } = req.params;
+  const { pagado } = req.body;
+  const idUsuario = req.usuario.id;
+
+  try {
+    await pool.query(
+      `INSERT INTO pagos (id_gasto, id_usuario, pagado, fecha_pago)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (id_gasto, id_usuario) DO UPDATE SET pagado = EXCLUDED.pagado, fecha_pago = NOW()`,
+      [idGasto, idUsuario, pagado]
+    );
+    res.json({ mensaje: "Pago actualizado" });
+  } catch (error) {
+    console.error("❌ Error al guardar pago:", error);
+    res.status(500).json({ error: "Error al guardar pago" });
+  }
+});
+
+router.get("/:id/detalle", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const gasto = await pool.query(
+      `SELECT g.id, g.descripcion, g.monto, g.pagado_por,
+              u.nombre AS nombre_pagador
+       FROM gastos g
+       JOIN usuarios u ON g.pagado_por = u.id
+       WHERE g.id = $1`,
+      [id]
+    );
+
+    if (gasto.rows.length === 0) {
+      return res.status(404).json({ error: "Gasto no encontrado" });
+    }
+
+    const deudas = await pool.query(
+      `SELECT d.id_usuario,
+       u.nombre AS nombre_usuario,
+       u.imagen_perfil,
+       d.monto,
+       d.tipo,
+       COALESCE(p.pagado, false) AS pagado,
+       p.fecha_pago
+       FROM deudas d
+       JOIN usuarios u ON d.id_usuario = u.id
+       LEFT JOIN pagos p ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
+       WHERE d.id_gasto = $1`,
+      [id]
+    );
+
+    res.json({
+      id: gasto.rows[0].id,
+      descripcion: gasto.rows[0].descripcion,
+      monto: gasto.rows[0].monto,
+      pagado_por: {
+        id: gasto.rows[0].pagado_por,
+        nombre: gasto.rows[0].nombre_pagador
+      },
+      deudas: deudas.rows
+    });
+  } catch (err) {
+    console.error("Error al obtener detalle:", err);
+    res.status(500).json({ error: "Error al obtener detalle del gasto" });
+  }
+});
 
 // 📌 Actualizar un gasto (PROTEGIDO)
 router.put("/:id", verificarToken, async (req, res) => {

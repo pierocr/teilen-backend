@@ -48,7 +48,7 @@ router.get("/desglose/:id_grupo", verificarToken, async (req, res) => {
   try {
     const { id_grupo } = req.params;
 
-    console.log("👉 id_grupo recibido:", id_grupo);
+    //console.log("👉 id_grupo recibido:", id_grupo);
 
     // Validación robusta
     if (!id_grupo || isNaN(Number(id_grupo))) {

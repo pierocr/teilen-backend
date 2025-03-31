@@ -157,5 +157,116 @@ router.get("/perfil", async (req, res) => {
   }
 });
 
+// 📌 Registro de usuario (Crea un nuevo usuario con contraseña encriptada)
+router.post("/register", async (req, res) => {
+  try {
+    const {
+      nombre,
+      correo,
+      password,
+      telefono,
+      direccion,
+      fecha_nacimiento,
+      genero,
+      pais,
+      lenguaje,
+      referido_por
+    } = req.body;
+
+    // Validar campos obligatorios
+    if (!nombre || !correo || !password) {
+      return res.status(400).json({ error: "Nombre, correo y contraseña son obligatorios" });
+    }
+
+    // Validar formato de correo
+    const correoRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!correoRegex.test(correo)) {
+      return res.status(400).json({ error: "Correo electrónico inválido" });
+    }
+
+    // Validar longitud mínima de la contraseña
+    if (password.length < 6) {
+      return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
+    }
+
+    // Validar fecha de nacimiento
+    if (fecha_nacimiento) {
+      const fecha = new Date(fecha_nacimiento);
+      const hoy = new Date();
+      if (isNaN(fecha.getTime()) || fecha > hoy) {
+        return res.status(400).json({ error: "Fecha de nacimiento inválida" });
+      }
+    }
+
+    // Validar género
+    const generosPermitidos = ["masculino", "femenino", "otro", "prefiero no decir"];
+    if (genero && !generosPermitidos.includes(genero.toLowerCase())) {
+      return res.status(400).json({ error: "Género inválido" });
+    }
+
+    // Validar teléfono (opcional, debe ser numérico)
+    if (telefono && !/^\d{7,15}$/.test(telefono)) {
+      return res.status(400).json({ error: "Teléfono inválido (solo números, mínimo 7 dígitos)" });
+    }
+
+    // Validar lenguaje permitido
+    const lenguajesPermitidos = ["es", "en", "pt"];
+    if (lenguaje && !lenguajesPermitidos.includes(lenguaje.toLowerCase())) {
+      return res.status(400).json({ error: "Lenguaje no soportado" });
+    }
+
+    // Verificar si el correo ya existe
+    const usuarioExistente = await pool.query("SELECT * FROM usuarios WHERE correo = $1", [correo]);
+    if (usuarioExistente.rows.length > 0) {
+      return res.status(409).json({ error: "El correo ya está registrado." });
+    }
+
+    // Hashear la contraseña
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insertar usuario
+    const nuevoUsuario = await pool.query(
+      `INSERT INTO usuarios 
+      (nombre, correo, password, telefono, direccion, fecha_nacimiento, genero, pais, lenguaje, es_premium, referido_por, creado_en)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, $10, NOW())
+      RETURNING id, nombre, correo`,
+      [
+        nombre,
+        correo,
+        hashedPassword,
+        telefono || null,
+        direccion || null,
+        fecha_nacimiento || null,
+        genero || null,
+        pais || null,
+        lenguaje || "es",
+        referido_por || null
+      ]
+    );
+
+    const usuario = nuevoUsuario.rows[0];
+
+    const token = jwt.sign(
+      { id: usuario.id, nombre: usuario.nombre, correo: usuario.correo },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    res.status(201).json({
+      mensaje: "Usuario registrado correctamente.",
+      token,
+      user: {
+        id: usuario.id,
+        nombreCompleto: usuario.nombre,
+        correo: usuario.correo,
+        imagen_perfil: null,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 module.exports = router;

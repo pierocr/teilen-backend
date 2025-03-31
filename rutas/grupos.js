@@ -7,7 +7,7 @@ const router = express.Router();
 router.get("/", verificarToken, async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    console.log("🔍 Buscando grupos para usuario:", usuario_id);
+    //console.log("🔍 Buscando grupos para usuario:", usuario_id);
 
     const grupos = await pool.query(
       `SELECT 
@@ -27,7 +27,7 @@ router.get("/", verificarToken, async (req, res) => {
       [usuario_id]
     );
 
-    console.log("📋 Grupos encontrados:", grupos.rows);
+    //console.log("📋 Grupos encontrados:", grupos.rows);
     res.json(grupos.rows);
   } catch (error) {
     console.error("❌ Error en GET /grupos:", error);
