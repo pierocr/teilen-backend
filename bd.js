@@ -2,7 +2,7 @@ const { Pool } = require("pg");
 require("dotenv").config();
 
 // Configuración de conexión a Supabase PostgreSQL
-const pool = new Pool({
+/*const pool = new Pool({
   user: process.env.DB_USUARIO,
   password: process.env.DB_PASSWORD,
   host: process.env.DB_HOST,
@@ -12,7 +12,13 @@ const pool = new Pool({
   // 👇 Esto fuerza uso de IPv4
   statement_timeout: 10000,
   query_timeout: 10000,
+});*/
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
+
 
 // Probar la conexión
 pool.connect()
