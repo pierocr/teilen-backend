@@ -6,9 +6,12 @@ const pool = new Pool({
   user: process.env.DB_USUARIO,
   password: process.env.DB_PASSWORD,
   host: process.env.DB_HOST,
-  port: process.env.DB_PUERTO,
+  port: Number(process.env.DB_PUERTO),
   database: process.env.DB_NOMBRE,
-  ssl: { rejectUnauthorized: false }, // Requerido para Supabase
+  ssl: { rejectUnauthorized: false },
+  // 👇 Esto fuerza uso de IPv4
+  statement_timeout: 10000,
+  query_timeout: 10000,
 });
 
 // Probar la conexión
