@@ -42,7 +42,7 @@ app.use("/amigos", rutasAmigos);
 
 
 // Iniciar el servidor
-const PUERTO = process.env.PUERTO || 5001;
+const PUERTO = process.env.PORT || 5001;
 const HOST = "0.0.0.0"; // Permite conexiones desde cualquier dispositivo en la red
 
 // Obtener la IP de la red local automáticamente
