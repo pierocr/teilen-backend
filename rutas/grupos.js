@@ -10,22 +10,41 @@ router.get("/", verificarToken, async (req, res) => {
     //console.log("🔍 Buscando grupos para usuario:", usuario_id);
 
     const grupos = await pool.query(
-      `SELECT 
-      g.id, 
-      g.nombre, 
-      g.imagen,
-      COALESCE(SUM(ga.monto), 0) AS total,
-      COALESCE(SUM(d.monto), 0) AS monto_adeudado
-    FROM grupos g
-    JOIN usuarios_grupos ug ON g.id = ug.grupo_id
-    LEFT JOIN gastos ga ON g.id = ga.id_grupo
-    LEFT JOIN gastos g2 ON g2.id_grupo = g.id
-    LEFT JOIN deudas d ON d.id_gasto = g2.id AND d.id_usuario = $1
-    WHERE ug.usuario_id = $1
-    GROUP BY g.id
-  `,
+      `
+      SELECT 
+        g.id, 
+        g.nombre, 
+        g.imagen,
+    
+        -- Total gastado en el grupo (suma de todos los gastos del grupo)
+        COALESCE((
+          SELECT SUM(monto) FROM gastos ga WHERE ga.id_grupo = g.id
+        ), 0) AS total_gastado,
+    
+        -- Total adeudado por el usuario en este grupo
+        COALESCE((
+          SELECT SUM(d.monto)
+          FROM deudas d
+          JOIN gastos ga ON ga.id = d.id_gasto
+          WHERE d.id_usuario = $1 AND ga.id_grupo = g.id
+        ), 0) AS total_adeudado,
+    
+        -- Total pagado por el usuario en este grupo
+        COALESCE((
+          SELECT SUM(ga.monto)
+          FROM pagos p
+          JOIN gastos ga ON ga.id = p.id_gasto
+          WHERE p.id_usuario = $1 AND p.pagado = true AND ga.id_grupo = g.id
+        ), 0) AS total_pagado
+    
+      FROM grupos g
+      JOIN usuarios_grupos ug ON ug.grupo_id = g.id
+      WHERE ug.usuario_id = $1
+      GROUP BY g.id, g.nombre, g.imagen
+      `,
       [usuario_id]
     );
+    
 
     //console.log("📋 Grupos encontrados:", grupos.rows);
     res.json(grupos.rows);
@@ -122,6 +141,65 @@ router.get("/:id/participantes", verificarToken, async (req, res) => {
     res.status(500).json({ error: "Error obteniendo participantes" });
   }
 });
+
+// 📌 Obtener resumen financiero del grupo
+router.get("/:id/resumen", verificarToken, async (req, res) => {
+  const grupoId = req.params.id;
+
+  try {
+    const resultado = await pool.query(
+      `
+      SELECT 
+        g.id AS grupo_id,
+    
+        -- Total gastado en el grupo
+        COALESCE((
+          SELECT SUM(monto)
+          FROM gastos
+          WHERE id_grupo = g.id
+        ), 0) AS total_gastado,
+    
+        -- Total pagado por los usuarios
+        COALESCE((
+          SELECT SUM(d.monto)
+          FROM deudas d
+          JOIN pagos p ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
+          WHERE d.id_gasto IN (
+            SELECT id FROM gastos WHERE id_grupo = g.id
+          )
+        ), 0) AS total_pagado,
+    
+        -- Total adeudado = total_gastado - total_pagado
+        COALESCE((
+          SELECT SUM(monto) FROM gastos WHERE id_grupo = g.id
+        ), 0) -
+        COALESCE((
+          SELECT SUM(d.monto)
+          FROM deudas d
+          JOIN pagos p ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
+          WHERE d.id_gasto IN (
+            SELECT id FROM gastos WHERE id_grupo = g.id
+          )
+        ), 0) AS total_adeudado
+    
+      FROM grupos g
+      WHERE g.id = $1
+      GROUP BY g.id
+      `,
+      [grupoId]
+    );
+
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({ error: "Grupo no encontrado" });
+    }
+
+    res.json(resultado.rows[0]);
+  } catch (error) {
+    console.error("❌ Error en GET /grupos/:id/resumen:", error);
+    res.status(500).json({ error: "Error obteniendo resumen del grupo" });
+  }
+});
+
 
 
 module.exports = router;
