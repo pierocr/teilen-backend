@@ -2,13 +2,15 @@ const express = require("express");
 const pool = require("../bd");
 const verificarToken = require("../middlewares/auth");
 const router = express.Router();
+const multer = require("multer");
+const { v4: uuidv4 } = require("uuid");
+const supabase = require("../supabase");
+const upload = multer({ storage: multer.memoryStorage() });
 
 // 📌 Obtener todos los grupos (PROTEGIDO)
 router.get("/", verificarToken, async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
-    //console.log("🔍 Buscando grupos para usuario:", usuario_id);
-
     const grupos = await pool.query(
       `
       SELECT 
@@ -45,8 +47,6 @@ router.get("/", verificarToken, async (req, res) => {
       [usuario_id]
     );
     
-
-    //console.log("📋 Grupos encontrados:", grupos.rows);
     res.json(grupos.rows);
   } catch (error) {
     console.error("❌ Error en GET /grupos:", error);
@@ -54,27 +54,39 @@ router.get("/", verificarToken, async (req, res) => {
   }
 });
 
-// 📌 Crear un nuevo grupo (PROTEGIDO)
+// 📌 Crear un nuevo grupo + participantes (PROTEGIDO)
 router.post("/", verificarToken, async (req, res) => {
-  try {
-    const { nombre, imagen } = req.body;
-    const usuario_id = req.usuario.id;
+  const { nombre, imagen, participantes } = req.body;
+  const usuario_id = req.usuario.id;
 
-    // Crear el grupo
+
+  try {
     const nuevoGrupo = await pool.query(
-      "INSERT INTO grupos (nombre, imagen) VALUES ($1, $2) RETURNING *",
-      [nombre, imagen]
+      "INSERT INTO grupos (nombre, imagen, creado_por) VALUES ($1, $2, $3) RETURNING *",
+      [nombre, imagen, usuario_id]
     );
 
-    // Asociar el usuario con el grupo
+    // Asociar el usuario creador
     await pool.query(
       "INSERT INTO usuarios_grupos (usuario_id, grupo_id) VALUES ($1, $2)",
       [usuario_id, nuevoGrupo.rows[0].id]
     );
 
-    res.json(nuevoGrupo.rows[0]);
+    // Participantes
+    if (Array.isArray(participantes) && participantes.length) {
+      for (const pid of participantes) {
+        if (pid !== usuario_id) {
+          await pool.query(
+            "INSERT INTO usuarios_grupos (usuario_id, grupo_id) VALUES ($1, $2)",
+            [pid, nuevoGrupo.rows[0].id]
+          );
+        }
+      }
+    } else {
+    }
+    res.status(201).json(nuevoGrupo.rows[0]);
   } catch (error) {
-    console.error(error);
+    console.error("❌ Error creando grupo:", error);
     res.status(500).json({ error: "Error creando el grupo" });
   }
 });
@@ -128,7 +140,7 @@ router.get("/:id/participantes", verificarToken, async (req, res) => {
     const { id } = req.params;
 
     const participantes = await pool.query(
-      `SELECT u.id, u.nombre, u.correo
+      `SELECT u.id, u.nombre, u.correo, u.imagen_perfil
        FROM usuarios u
        JOIN usuarios_grupos ug ON u.id = ug.usuario_id
        WHERE ug.grupo_id = $1`,
@@ -141,6 +153,36 @@ router.get("/:id/participantes", verificarToken, async (req, res) => {
     res.status(500).json({ error: "Error obteniendo participantes" });
   }
 });
+
+// 📌 Agregar participantes a un grupo específico
+router.post("/:id/participantes", verificarToken, async (req, res) => {
+  try {
+    const grupoId = req.params.id;
+    const { usuariosAAgregar } = req.body; 
+    // Ej: usuariosAAgregar = [2, 7, 10]
+
+    // Insertar cada usuario en usuarios_grupos (si no existe ya)
+    for (let userId of usuariosAAgregar) {
+      // Verificar si ya está en el grupo
+      const yaEsta = await pool.query(
+        "SELECT * FROM usuarios_grupos WHERE usuario_id = $1 AND grupo_id = $2",
+        [userId, grupoId]
+      );
+      if (yaEsta.rows.length === 0) {
+        await pool.query(
+          "INSERT INTO usuarios_grupos (usuario_id, grupo_id) VALUES ($1, $2)",
+          [userId, grupoId]
+        );
+      }
+    }
+
+    res.json({ mensaje: "Participantes agregados correctamente." });
+  } catch (error) {
+    console.error("❌ Error al agregar participantes:", error);
+    res.status(500).json({ error: "No se pudieron agregar los participantes" });
+  }
+});
+
 
 // 📌 Obtener resumen financiero del grupo
 router.get("/:id/resumen", verificarToken, async (req, res) => {
@@ -197,6 +239,29 @@ router.get("/:id/resumen", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("❌ Error en GET /grupos/:id/resumen:", error);
     res.status(500).json({ error: "Error obteniendo resumen del grupo" });
+  }
+});
+
+router.post("/imagen", verificarToken, upload.single("imagen"), async (req, res) => {
+  try {
+    const file = req.file;
+    const extension = file.originalname.split(".").pop();
+    const filename = `grupo_${uuidv4()}.${extension}`;
+
+    const { error } = await supabase.storage
+      .from("grupos")
+      .upload(filename, file.buffer, {
+        contentType: file.mimetype,
+        upsert: true,
+      });
+
+    if (error) throw error;
+
+    const url = `${process.env.SUPABASE_URL}/storage/v1/object/public/grupos/${filename}`;
+    res.json({ url });
+  } catch (err) {
+    console.error("❌ Error al subir imagen de grupo:", err.message);
+    res.status(500).json({ error: "No se pudo subir la imagen" });
   }
 });
 
