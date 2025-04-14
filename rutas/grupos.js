@@ -111,7 +111,37 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    
+
+    // 📥 Buscar imagen del grupo
+    const grupoResult = await pool.query("SELECT imagen FROM grupos WHERE id = $1", [id]);
+
+    if (grupoResult.rows.length === 0) {
+      return res.status(404).json({ error: "Grupo no encontrado" });
+    }
+
+    const imagenUrl = grupoResult.rows[0].imagen;
+
+    // 🧽 Si no es imagen por defecto, eliminar del bucket
+    if (imagenUrl && !imagenUrl.includes("default")) {
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const bucket = "grupos";
+
+      // Extraer la ruta relativa
+      const rutaRelativa = imagenUrl.replace(
+        `${supabaseUrl}/storage/v1/object/public/${bucket}/`,
+        ""
+      );
+
+      const { error: errorEliminar } = await supabase.storage
+        .from(bucket)
+        .remove([rutaRelativa]);
+
+      if (errorEliminar) {
+        console.warn("⚠️ No se pudo eliminar la imagen:", errorEliminar.message);
+        // no detenemos el proceso, solo lo notificamos
+      }
+    }
+
     // 1. Borrar deudas asociadas al grupo
     await pool.query(`
       DELETE FROM deudas
@@ -131,6 +161,7 @@ router.delete("/:id", async (req, res) => {
 
     res.json({ mensaje: "Grupo eliminado correctamente (y deudas liquidadas)." });
   } catch (err) {
+    console.error("❌ Error al eliminar grupo:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

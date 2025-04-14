@@ -200,14 +200,38 @@ router.post(
     }
 
     try {
+      // 🧽 Paso 1: Obtener imagen anterior
+      const resultado = await pool.query(
+        "SELECT imagen_perfil FROM usuarios WHERE id = $1",
+        [userId]
+      );
+
+      const imagenAnterior = resultado.rows[0]?.imagen_perfil;
+      const supabaseUrl = process.env.SUPABASE_URL;
+
+      if (imagenAnterior && !imagenAnterior.includes("default")) {
+        const rutaRelativa = imagenAnterior.replace(
+          `${supabaseUrl}/storage/v1/object/public/${BUCKET}/`,
+          ""
+        );
+
+        const { error: errorEliminar } = await supabase.storage
+          .from(BUCKET)
+          .remove([rutaRelativa]);
+
+        if (errorEliminar) {
+          console.warn("⚠️ No se pudo eliminar la imagen anterior:", errorEliminar.message);
+        }
+      }
+
+      // 📤 Paso 2: Subir nueva imagen
       const nombreArchivo = `perfil_${userId}_${Date.now()}.jpg`;
 
-      // Usamos el método upload del SDK
       const { data, error } = await supabase.storage
         .from(BUCKET)
         .upload(nombreArchivo, file.buffer, {
           contentType: file.mimetype,
-          upsert: true, // sobrescribe si existe
+          upsert: true,
         });
 
       if (error) {
@@ -217,14 +241,14 @@ router.post(
           .json({ error: "Error al subir la imagen a Supabase Storage" });
       }
 
-      // Generamos la URL pública
+      // 🔗 Paso 3: Generar URL pública
       const { data: publicData } = supabase.storage
         .from(BUCKET)
         .getPublicUrl(nombreArchivo);
 
       const imagenUrl = publicData.publicUrl;
 
-      // Guardamos la URL en la base de datos
+      // 🧾 Paso 4: Guardar nueva URL en la base de datos
       await pool.query(
         "UPDATE usuarios SET imagen_perfil = $1 WHERE id = $2",
         [imagenUrl, userId]
