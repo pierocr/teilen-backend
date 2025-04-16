@@ -77,6 +77,54 @@ router.get("/desglose/:id_grupo", verificarToken, async (req, res) => {
   }
 });
 
+// 📌 Obtener resumen financiero global de un usuario
+router.get("/resumen-financiero/:id_usuario", verificarToken, async (req, res) => {
+  try {
+    const { id_usuario } = req.params;
+
+    if (isNaN(id_usuario)) {
+      return res.status(400).json({ error: "El ID del usuario debe ser un número válido" });
+    }
+
+    const usuarioId = parseInt(id_usuario);
+
+    // ✅ Total adeudado por el usuario (solo deudas reales)
+    const { rows: totalAdeudadoRows } = await pool.query(
+      `SELECT COALESCE(SUM(monto), 0) AS total_adeudado
+       FROM deudas
+       WHERE id_usuario = $1 AND tipo = 'deuda'`,
+      [usuarioId]
+    );
+
+    // ✅ Total pagado por el usuario (solo pagos de tipo deuda)
+    const { rows: totalPagadoRows } = await pool.query(
+      `SELECT COALESCE(SUM(d.monto), 0) AS total_pagado
+       FROM pagos p
+       JOIN deudas d ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
+       WHERE p.id_usuario = $1 AND p.pagado = true AND d.tipo = 'deuda'`,
+      [usuarioId]
+    );
+
+    // Cantidad de grupos en los que participa
+    const { rows: gruposRows } = await pool.query(
+      `SELECT COUNT(*) AS cantidad_grupos
+       FROM "usuarios_grupos"
+       WHERE usuario_id = $1`,
+      [usuarioId]
+    );
+
+    res.json({
+      total_adeudado: parseInt(totalAdeudadoRows[0].total_adeudado),
+      total_pagado: parseInt(totalPagadoRows[0].total_pagado),
+      cantidad_grupos: parseInt(gruposRows[0].cantidad_grupos),
+    });
+
+  } catch (err) {
+    console.error("❌ Error en GET /resumen-financiero:", err);
+    res.status(500).json({ error: "Error al obtener el resumen financiero" });
+  }
+});
+
 // 📌 Obtener deudas de un usuario en un grupo específico
 router.get("/:id_usuario/:id_grupo", async (req, res) => {
   try {
@@ -175,7 +223,6 @@ router.delete("/liquidar/:id_usuario/:id_grupo", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 
 module.exports = router;

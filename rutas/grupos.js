@@ -11,34 +11,63 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.get("/", verificarToken, async (req, res) => {
   try {
     const usuario_id = req.usuario.id;
+
     const grupos = await pool.query(
       `
       SELECT 
         g.id, 
         g.nombre, 
         g.imagen,
-    
-        -- Total gastado en el grupo (suma de todos los gastos del grupo)
+
+        -- Total gastado en el grupo
         COALESCE((
           SELECT SUM(monto) FROM gastos ga WHERE ga.id_grupo = g.id
         ), 0) AS total_gastado,
-    
-        -- Total adeudado por el usuario en este grupo
+
+        -- Total adeudado por el usuario (solo tipo 'deuda')
         COALESCE((
           SELECT SUM(d.monto)
           FROM deudas d
           JOIN gastos ga ON ga.id = d.id_gasto
-          WHERE d.id_usuario = $1 AND ga.id_grupo = g.id
+          WHERE d.id_usuario = $1
+            AND ga.id_grupo = g.id
+            AND d.tipo = 'deuda'
         ), 0) AS total_adeudado,
-    
-        -- Total pagado por el usuario en este grupo
+
+        -- Total pagado por el usuario en este grupo (solo pagos reales de deuda)
         COALESCE((
-          SELECT SUM(ga.monto)
+          SELECT SUM(d.monto)
           FROM pagos p
-          JOIN gastos ga ON ga.id = p.id_gasto
-          WHERE p.id_usuario = $1 AND p.pagado = true AND ga.id_grupo = g.id
-        ), 0) AS total_pagado
-    
+          JOIN deudas d ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
+          JOIN gastos ga ON ga.id = d.id_gasto
+          WHERE p.id_usuario = $1
+            AND p.pagado = true
+            AND ga.id_grupo = g.id
+            AND d.tipo = 'deuda'
+        ), 0) AS total_pagado,
+
+        -- Total por cobrar al usuario (deudas a favor del usuario)
+        COALESCE((
+          SELECT SUM(d.monto)
+          FROM deudas d
+          JOIN gastos ga ON d.id_gasto = ga.id
+          WHERE ga.pagado_por = $1
+            AND ga.id_grupo = g.id
+            AND d.tipo = 'a_favor'
+        ), 0) AS total_por_cobrar,
+
+        -- Total recibido (pagos de otros hacia el usuario que pagó)
+        COALESCE((
+          SELECT SUM(d.monto)
+          FROM deudas d
+          JOIN gastos ga ON d.id_gasto = ga.id
+          JOIN pagos p ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
+          WHERE ga.pagado_por = $1
+            AND ga.id_grupo = g.id
+            AND p.pagado = true
+            AND d.tipo = 'a_favor'
+        ), 0) AS total_recibido
+
       FROM grupos g
       JOIN usuarios_grupos ug ON ug.grupo_id = g.id
       WHERE ug.usuario_id = $1
@@ -46,11 +75,13 @@ router.get("/", verificarToken, async (req, res) => {
       `,
       [usuario_id]
     );
-    
+
     res.json(grupos.rows);
   } catch (error) {
     console.error("❌ Error en GET /grupos:", error);
-    res.status(500).json({ error: "Error obteniendo los grupos", detalles: error.message });
+    res
+      .status(500)
+      .json({ error: "Error obteniendo los grupos", detalles: error.message });
   }
 });
 
@@ -58,7 +89,6 @@ router.get("/", verificarToken, async (req, res) => {
 router.post("/", verificarToken, async (req, res) => {
   const { nombre, imagen, participantes } = req.body;
   const usuario_id = req.usuario.id;
-
 
   try {
     const nuevoGrupo = await pool.query(
@@ -91,7 +121,6 @@ router.post("/", verificarToken, async (req, res) => {
   }
 });
 
-
 // 📌 Actualizar un grupo
 router.put("/:id", async (req, res) => {
   try {
@@ -108,7 +137,6 @@ router.put("/:id", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // Endpoint DELETE para eliminar imagen – ¡DECLARA ESTE ANTES DE DELETE /:id!
 router.delete("/imagen", verificarToken, async (req, res) => {
@@ -130,7 +158,9 @@ router.delete("/imagen", verificarToken, async (req, res) => {
 
     // Validación de seguridad: evitar borrar fuera del bucket esperado
     if (!rutaRelativa || rutaRelativa === url) {
-      return res.status(400).json({ error: "URL inválida o fuera del bucket permitido" });
+      return res
+        .status(400)
+        .json({ error: "URL inválida o fuera del bucket permitido" });
     }
 
     const { error } = await supabase.storage
@@ -139,12 +169,13 @@ router.delete("/imagen", verificarToken, async (req, res) => {
 
     if (error) {
       console.error("❌ Supabase error:", error);
-      return res.status(500).json({ error: "Error al eliminar la imagen del bucket" });
+      return res
+        .status(500)
+        .json({ error: "Error al eliminar la imagen del bucket" });
     }
 
     console.log("✅ Imagen eliminada correctamente:", rutaRelativa);
     res.json({ mensaje: "Imagen eliminada correctamente" });
-
   } catch (error) {
     console.error("❌ Error en DELETE /grupos/imagen:", error.message);
     res.status(500).json({ error: "Error interno del servidor" });
@@ -157,7 +188,10 @@ router.delete("/:id", async (req, res) => {
     const { id } = req.params;
 
     // 📥 Buscar imagen del grupo
-    const grupoResult = await pool.query("SELECT imagen FROM grupos WHERE id = $1", [id]);
+    const grupoResult = await pool.query(
+      "SELECT imagen FROM grupos WHERE id = $1",
+      [id]
+    );
 
     if (grupoResult.rows.length === 0) {
       return res.status(404).json({ error: "Grupo no encontrado" });
@@ -181,18 +215,24 @@ router.delete("/:id", async (req, res) => {
         .remove([rutaRelativa]);
 
       if (errorEliminar) {
-        console.warn("⚠️ No se pudo eliminar la imagen:", errorEliminar.message);
+        console.warn(
+          "⚠️ No se pudo eliminar la imagen:",
+          errorEliminar.message
+        );
         // no detenemos el proceso, solo lo notificamos
       }
     }
 
     // 1. Borrar deudas asociadas al grupo
-    await pool.query(`
+    await pool.query(
+      `
       DELETE FROM deudas
       WHERE id_gasto IN (
         SELECT id FROM gastos WHERE id_grupo = $1
       )
-    `, [id]);
+    `,
+      [id]
+    );
 
     // 2. Borrar gastos asociados
     await pool.query("DELETE FROM gastos WHERE id_grupo = $1", [id]);
@@ -203,7 +243,9 @@ router.delete("/:id", async (req, res) => {
     // 4. Borrar el grupo
     await pool.query("DELETE FROM grupos WHERE id = $1", [id]);
 
-    res.json({ mensaje: "Grupo eliminado correctamente (y deudas liquidadas)." });
+    res.json({
+      mensaje: "Grupo eliminado correctamente (y deudas liquidadas).",
+    });
   } catch (err) {
     console.error("❌ Error al eliminar grupo:", err.message);
     res.status(500).json({ error: err.message });
@@ -233,7 +275,7 @@ router.get("/:id/participantes", verificarToken, async (req, res) => {
 router.post("/:id/participantes", verificarToken, async (req, res) => {
   try {
     const grupoId = req.params.id;
-    const { usuariosAAgregar } = req.body; 
+    const { usuariosAAgregar } = req.body;
     // Ej: usuariosAAgregar = [2, 7, 10]
 
     // Insertar cada usuario en usuarios_grupos (si no existe ya)
@@ -258,88 +300,124 @@ router.post("/:id/participantes", verificarToken, async (req, res) => {
   }
 });
 
-
 // 📌 Obtener resumen financiero del grupo
 router.get("/:id/resumen", verificarToken, async (req, res) => {
   const grupoId = req.params.id;
+  const usuarioId = req.usuario.id;
 
   try {
     const resultado = await pool.query(
       `
       SELECT 
         g.id AS grupo_id,
-    
+
         -- Total gastado en el grupo
-        COALESCE((
-          SELECT SUM(monto)
-          FROM gastos
-          WHERE id_grupo = g.id
-        ), 0) AS total_gastado,
-    
-        -- Total pagado por los usuarios
+        COALESCE((SELECT SUM(monto) FROM gastos WHERE id_grupo = g.id), 0) AS total_gastado,
+
+        -- Total pagado por todos (pagos reales)
         COALESCE((
           SELECT SUM(d.monto)
           FROM deudas d
           JOIN pagos p ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
-          WHERE d.id_gasto IN (
-            SELECT id FROM gastos WHERE id_grupo = g.id
-          )
+          JOIN gastos ga ON ga.id = d.id_gasto
+          WHERE ga.id_grupo = g.id AND d.tipo = 'deuda' AND p.pagado = true
         ), 0) AS total_pagado,
-    
-        -- Total adeudado = total_gastado - total_pagado
+
+        -- Total adeudado general
+        COALESCE((SELECT SUM(monto) FROM gastos WHERE id_grupo = g.id), 0) -
         COALESCE((
-          SELECT SUM(monto) FROM gastos WHERE id_grupo = g.id
+          SELECT SUM(d.monto)
+          FROM deudas d
+          JOIN pagos p ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
+          JOIN gastos ga ON ga.id = d.id_gasto
+          WHERE ga.id_grupo = g.id AND d.tipo = 'deuda' AND p.pagado = true
+        ), 0) AS total_adeudado,
+
+        -- Total adeudado por el usuario actual
+        COALESCE((
+          SELECT SUM(d.monto)
+          FROM deudas d
+          JOIN gastos ga ON ga.id = d.id_gasto
+          WHERE d.id_usuario = $2 AND ga.id_grupo = g.id AND d.tipo = 'deuda'
         ), 0) -
         COALESCE((
           SELECT SUM(d.monto)
           FROM deudas d
           JOIN pagos p ON p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario
-          WHERE d.id_gasto IN (
-            SELECT id FROM gastos WHERE id_grupo = g.id
-          )
-        ), 0) AS total_adeudado
-    
+          JOIN gastos ga ON ga.id = d.id_gasto
+          WHERE d.id_usuario = $2 AND ga.id_grupo = g.id AND d.tipo = 'deuda' AND p.pagado = true
+        ), 0) AS total_adeudado_usuario
+
       FROM grupos g
       WHERE g.id = $1
       GROUP BY g.id
       `,
-      [grupoId]
+      [grupoId, usuarioId]
     );
 
     if (resultado.rows.length === 0) {
       return res.status(404).json({ error: "Grupo no encontrado" });
     }
 
-    res.json(resultado.rows[0]);
+    // 🔍 Obtener detalle de a quién le debe
+    const detalleDeuda = await pool.query(
+      `
+      SELECT 
+        u.nombre AS a_quien,
+        SUM(d.monto) AS monto
+      FROM deudas d
+      JOIN gastos ga ON ga.id = d.id_gasto
+      JOIN usuarios u ON ga.pagado_por = u.id
+      WHERE d.id_usuario = $1
+        AND ga.id_grupo = $2
+        AND d.tipo = 'deuda'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pagos p
+          WHERE p.id_gasto = d.id_gasto AND p.id_usuario = d.id_usuario AND p.pagado = true
+        )
+      GROUP BY u.nombre
+      `,
+      [usuarioId, grupoId]
+    );
+
+    res.json({
+      ...resultado.rows[0],
+      detalles_deuda: detalleDeuda.rows,
+    });
   } catch (error) {
     console.error("❌ Error en GET /grupos/:id/resumen:", error);
     res.status(500).json({ error: "Error obteniendo resumen del grupo" });
   }
 });
 
-router.post("/imagen", verificarToken, upload.single("imagen"), async (req, res) => {
-  try {
-    const file = req.file;
-    const extension = file.originalname.split(".").pop();
-    const filename = `grupo_${uuidv4()}.${extension}`;
 
-    const { error } = await supabase.storage
-      .from("grupos")
-      .upload(filename, file.buffer, {
-        contentType: file.mimetype,
-        upsert: true,
-      });
+router.post(
+  "/imagen",
+  verificarToken,
+  upload.single("imagen"),
+  async (req, res) => {
+    try {
+      const file = req.file;
+      const extension = file.originalname.split(".").pop();
+      const filename = `grupo_${uuidv4()}.${extension}`;
 
-    if (error) throw error;
+      const { error } = await supabase.storage
+        .from("grupos")
+        .upload(filename, file.buffer, {
+          contentType: file.mimetype,
+          upsert: true,
+        });
 
-    const url = `${process.env.SUPABASE_URL}/storage/v1/object/public/grupos/${filename}`;
-    res.json({ url });
-  } catch (err) {
-    console.error("❌ Error al subir imagen de grupo:", err.message);
-    res.status(500).json({ error: "No se pudo subir la imagen" });
+      if (error) throw error;
+
+      const url = `${process.env.SUPABASE_URL}/storage/v1/object/public/grupos/${filename}`;
+      res.json({ url });
+    } catch (err) {
+      console.error("❌ Error al subir imagen de grupo:", err.message);
+      res.status(500).json({ error: "No se pudo subir la imagen" });
+    }
   }
-});
-
-
+);
 
 module.exports = router;
