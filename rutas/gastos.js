@@ -25,16 +25,31 @@ router.post("/", verificarToken, async (req, res) => {
       id_usuarios,
       montos_personalizados,
       imagen,
-      categoria_id
+      categoria_id,
+      icono,
+      nota,
+      recurrente,
+      dia_recurrente,
+      distribucion  // para 2 personas: "completo" o "igual"
     } = req.body;
 
-    if (!id_grupo || !monto || !descripcion || !pagado_por || !id_usuarios.length) {
-      return res.status(400).json({ error: "Todos los campos son obligatorios" });
+    // Validaciones básicas
+    if (!id_grupo || !monto || !descripcion || !pagado_por || !id_usuarios?.length) {
+      return res.status(400).json({ error: "Todos los campos obligatorios deben ser completados" });
     }
     if (monto <= 0) {
       return res.status(400).json({ error: "El monto debe ser mayor a 0" });
     }
+    if (recurrente && (
+          !dia_recurrente ||
+          isNaN(parseInt(dia_recurrente, 10)) ||
+          parseInt(dia_recurrente, 10) < 1 ||
+          parseInt(dia_recurrente, 10) > 31
+        )) {
+      return res.status(400).json({ error: "Debe proporcionar un día recurrente válido (entre 1 y 31)" });
+    }
 
+    // Validar existencia del grupo y del usuario que pagó
     const grupoExiste = await pool.query("SELECT * FROM grupos WHERE id = $1", [id_grupo]);
     if (grupoExiste.rows.length === 0) {
       return res.status(400).json({ error: "El grupo no existe" });
@@ -45,48 +60,87 @@ router.post("/", verificarToken, async (req, res) => {
       return res.status(400).json({ error: "El usuario que pagó no existe" });
     }
 
+    // Insertar el nuevo gasto incluyendo los nuevos campos
     const nuevoGasto = await pool.query(
       `INSERT INTO gastos 
-        (id_grupo, monto, descripcion, pagado_por, imagen, categoria_id, creado_por) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [id_grupo, monto, descripcion, pagado_por, imagen, categoria_id, req.usuario.id]
-    );    
-
+         (id_grupo, monto, descripcion, pagado_por, imagen, categoria_id, creado_por, icono, nota, recurrente, dia_recurrente) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING id`,
+      [
+        id_grupo,
+        monto,
+        descripcion,
+        pagado_por,
+        imagen || null,
+        categoria_id || null,
+        req.usuario.id,
+        icono || null,
+        nota || null,
+        recurrente || false,
+        recurrente ? parseInt(dia_recurrente, 10) : null
+      ]
+    );
     const id_gasto = nuevoGasto.rows[0].id;
     const timestamp = new Date();
     const usuariosProcesados = new Set();
 
-    if (montos_personalizados && Object.keys(montos_personalizados).length > 0) {
-      let sumaMontos = Object.values(montos_personalizados).reduce((a, b) => a + b, 0);
+    // ───────────────────────────────────────────────
+    // (A) Caso de 2 participantes y modo "completo":
+    // Se interpretará que el pagador adelantó el total,
+    // así que se crea:
+    //   - Una fila: para el pagador con tipo "a_favor" y monto = total.
+    //   - Una fila: para el otro usuario con tipo "deuda" y monto = total.
+    // ───────────────────────────────────────────────
+    if (id_usuarios.length === 2 && distribucion === "completo") {
+      // Insertar fila para el pagador (quien puso el dinero)
+      await pool.query(
+        "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
+        [id_gasto, pagado_por, monto, "a_favor", timestamp]
+      );
+      // Obtener el otro usuario
+      const otroUsuario = id_usuarios.find((id) => id !== pagado_por);
+      // Insertar fila para el otro usuario (quien debe la totalidad)
+      await pool.query(
+        "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
+        [id_gasto, otroUsuario, monto, "deuda", timestamp]
+      );
+      usuariosProcesados.add(pagado_por);
+      usuariosProcesados.add(otroUsuario);
+    }
+    // ───────────────────────────────────────────────
+    // (B) Si se envían montos personalizados (para más de 2 o 2 en otro modo)
+    // ───────────────────────────────────────────────
+    else if (montos_personalizados && Object.keys(montos_personalizados).length > 0) {
+      const sumaMontos = Object.values(montos_personalizados).reduce((a, b) => a + b, 0);
       if (sumaMontos !== monto) {
         return res.status(400).json({ error: "La suma de los montos personalizados no coincide con el monto total" });
       }
-
       for (let id_usuario of id_usuarios) {
         const monto_final = montos_personalizados[id_usuario] || 0;
-        const tipo = (id_usuario === pagado_por) ? 'a_favor' : 'deuda';
-
+        const tipo = (id_usuario === pagado_por) ? "a_favor" : "deuda";
         await pool.query(
           "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
           [id_gasto, id_usuario, monto_final, tipo, timestamp]
         );
         usuariosProcesados.add(id_usuario);
       }
-    } else {
-      let monto_dividido = Math.floor((monto / id_usuarios.length) * 100) / 100;
-      let ajuste = monto - (monto_dividido * id_usuarios.length);
-
+    }
+    // ───────────────────────────────────────────────
+    // (C) Caso por defecto: división en partes iguales
+    // ───────────────────────────────────────────────
+    else {
+      const totalUsuarios = id_usuarios.length;
+      let monto_dividido = Math.floor((monto / totalUsuarios) * 100) / 100;
+      let ajuste = monto - (monto_dividido * totalUsuarios);
       let primer_usuario = true;
+
       for (let id_usuario of id_usuarios) {
         let monto_final = monto_dividido;
-
         if (primer_usuario) {
           monto_final += ajuste;
           primer_usuario = false;
         }
-
-        const tipo = (id_usuario === pagado_por) ? 'a_favor' : 'deuda';
-
+        const tipo = (id_usuario === pagado_por) ? "a_favor" : "deuda";
         await pool.query(
           "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
           [id_gasto, id_usuario, monto_final, tipo, timestamp]
@@ -95,13 +149,19 @@ router.post("/", verificarToken, async (req, res) => {
       }
     }
 
-    // Si por alguna razón el pagador no estaba en id_usuarios, lo registramos igual
+    // Por precaución: si por alguna razón el pagador no fue insertado, se asegura su fila.
     if (!usuariosProcesados.has(pagado_por)) {
       await pool.query(
         "INSERT INTO deudas (id_gasto, id_usuario, monto, tipo, creado_en) VALUES ($1, $2, $3, $4, $5)",
-        [id_gasto, pagado_por, monto, 'a_favor', timestamp]
+        [id_gasto, pagado_por, monto, "a_favor", timestamp]
       );
     }
+
+    // Consultar las deudas recién insertadas para enviarlas en el response
+    const deudasInsertadas = await pool.query(
+      "SELECT id_usuario, monto, tipo FROM deudas WHERE id_gasto = $1",
+      [id_gasto]
+    );
 
     res.json({
       mensaje: "Gasto y deudas registradas correctamente",
@@ -111,16 +171,23 @@ router.post("/", verificarToken, async (req, res) => {
         monto,
         descripcion,
         pagado_por,
-        imagen,
-        categoria_id,
+        imagen: imagen || null,
+        categoria_id: categoria_id || null,
         creado_por: req.usuario.id,
+        icono: icono || null,
+        nota: nota || null,
+        recurrente: recurrente || false,
+        dia_recurrente: recurrente ? parseInt(dia_recurrente, 10) : null,
         creado_en: timestamp
-      }
+      },
+      deudas: deudasInsertadas.rows
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error("❌ Error en POST /gastos:", error.message);
+    res.status(500).json({ error: error.message });
   }
 });
+
 
 // PUT /gastos/:idGasto/pago
 router.put('/:idGasto/pago', verificarToken, async (req, res) => {
@@ -354,9 +421,18 @@ router.get("/:id/detalle", verificarToken, async (req, res) => {
     const { id } = req.params;
 
     const gasto = await pool.query(
-      `SELECT g.id, g.id_grupo, g.descripcion, g.monto, g.pagado_por, g.creado_por,
-              u.nombre AS nombre_pagador,
-              c.nombre AS nombre_creador
+      `SELECT 
+         g.id, 
+         g.id_grupo, 
+         g.descripcion, 
+         g.monto, 
+         g.pagado_por, 
+         g.creado_por,
+         g.icono,
+         g.recurrente,
+         g.dia_recurrente,
+         u.nombre AS nombre_pagador,
+         c.nombre AS nombre_creador
        FROM gastos g
        JOIN usuarios u ON g.pagado_por = u.id
        JOIN usuarios c ON g.creado_por = c.id
@@ -385,24 +461,28 @@ router.get("/:id/detalle", verificarToken, async (req, res) => {
 
     res.json({
       id: gasto.rows[0].id,
-      id_grupo: gasto.rows[0].id_grupo, // ✅ agregado aquí
+      id_grupo: gasto.rows[0].id_grupo,
       descripcion: gasto.rows[0].descripcion,
       monto: gasto.rows[0].monto,
+      icono: gasto.rows[0].icono,                   // Nuevo
+      recurrente: gasto.rows[0].recurrente,         // Nuevo
+      dia_recurrente: gasto.rows[0].dia_recurrente, // Nuevo
       pagado_por: {
         id: gasto.rows[0].pagado_por,
-        nombre: gasto.rows[0].nombre_pagador
+        nombre: gasto.rows[0].nombre_pagador,
       },
       creado_por: {
         id: gasto.rows[0].creado_por,
-        nombre: gasto.rows[0].nombre_creador
+        nombre: gasto.rows[0].nombre_creador,
       },
-      deudas: deudas.rows
+      deudas: deudas.rows,
     });
   } catch (error) {
     console.error("❌ Error en GET /gastos/:id/detalle:", error);
     res.status(500).json({ error: error.message });
   }
 });
+
 
 // 📌 Obtener los gastos de un grupo específico con detalle para frontend (PROTEGIDO)
 router.get("/:id_grupo", verificarToken, async (req, res) => {
@@ -444,13 +524,16 @@ router.get("/:id_grupo", verificarToken, async (req, res) => {
         descripcion: gasto.descripcion,
         monto: gasto.monto,
         imagen: gasto.imagen,
+        icono: gasto.icono,                   // Nuevo: se envía el icono
+        recurrente: gasto.recurrente,         // Nuevo: true/false
+        dia_recurrente: gasto.dia_recurrente, // Opcional: el día recurrente si aplica
         fecha: gasto.creado_en,
         pagado_por: {
           id: gasto.pagado_por,
-          nombre: gasto.pagador_nombre
+          nombre: gasto.pagador_nombre,
         },
         relacion_usuario,
-        monto_usuario
+        monto_usuario,
       });
     }
 
@@ -459,7 +542,4 @@ router.get("/:id_grupo", verificarToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-
-
 module.exports = router;

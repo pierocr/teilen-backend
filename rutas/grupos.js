@@ -96,14 +96,58 @@ router.post("/", verificarToken, async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre } = req.body;
+    const { nombre, imagen } = req.body;
+
     const grupoActualizado = await pool.query(
-      "UPDATE grupos SET nombre = $1 WHERE id = $2 RETURNING *",
-      [nombre, id]
+      "UPDATE grupos SET nombre = $1, imagen = $2 WHERE id = $3 RETURNING *",
+      [nombre, imagen, id]
     );
+
     res.json(grupoActualizado.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+
+// Endpoint DELETE para eliminar imagen – ¡DECLARA ESTE ANTES DE DELETE /:id!
+router.delete("/imagen", verificarToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    if (!url) {
+      return res.status(400).json({ error: "URL de imagen requerida" });
+    }
+
+    const bucket = "grupos";
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const prefijo = `${supabaseUrl}/storage/v1/object/public/${bucket}/`;
+
+    console.log("🧾 URL recibida:", url);
+    console.log("🔎 Prefijo esperado:", prefijo);
+
+    const rutaRelativa = url.replace(prefijo, "");
+
+    // Validación de seguridad: evitar borrar fuera del bucket esperado
+    if (!rutaRelativa || rutaRelativa === url) {
+      return res.status(400).json({ error: "URL inválida o fuera del bucket permitido" });
+    }
+
+    const { error } = await supabase.storage
+      .from(bucket)
+      .remove([rutaRelativa]);
+
+    if (error) {
+      console.error("❌ Supabase error:", error);
+      return res.status(500).json({ error: "Error al eliminar la imagen del bucket" });
+    }
+
+    console.log("✅ Imagen eliminada correctamente:", rutaRelativa);
+    res.json({ mensaje: "Imagen eliminada correctamente" });
+
+  } catch (error) {
+    console.error("❌ Error en DELETE /grupos/imagen:", error.message);
+    res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 
